@@ -8,7 +8,7 @@ from openpyxl import Workbook, load_workbook
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Nome del file Excel
+# Nome del file principale che salva tutti i dati
 FILE_EXCEL = "estratto_conto.xlsx"
 
 # Carica o crea il file Excel
@@ -42,15 +42,39 @@ def estratto_conto(user_id: int):
     saldo = totale_entrate + totale_uscite
     return entrate, uscite, totale_entrate, totale_uscite, saldo
 
+def crea_file_excel_utente(user_id: int):
+    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
+    
+    wb_user = Workbook()
+    ws_user = wb_user.active
+    ws_user.title = "Estratto Conto"
+    
+    ws_user.append(["Tipo", "Importo"])
+    
+    for m in entrate:
+        ws_user.append(["Entrata", m])
+    for m in uscite:
+        ws_user.append(["Uscita", m])
+    
+    ws_user.append([])
+    ws_user.append(["Totale Entrate", totale_entrate])
+    ws_user.append(["Totale Uscite", totale_uscite])
+    ws_user.append(["Saldo Finale", saldo])
+    
+    filename = f"estratto_conto_{user_id}.xlsx"
+    wb_user.save(filename)
+    return filename
+
 # Comandi del bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Ciao! Sono TotalX Estratto Conto Bot.\n"
+        "Ciao! Sono TotalX Estratto Conto Bot Avanzato.\n"
         "Comandi:\n"
         "/add numero - aggiunge un'entrata\n"
         "/subtract numero - aggiunge un'uscita\n"
         "/total - mostra il saldo totale\n"
-        "/report - mostra l'estratto conto dettagliato"
+        "/report - mostra l'estratto conto dettagliato\n"
+        "/export - ricevi un file Excel con il tuo estratto conto"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,10 +82,8 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = int(context.args[0])
         user_id = update.message.from_user.id
         salva_movimento(user_id, value)
-        entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-        await update.message.reply_text(
-            f"Entrata registrata: +{value}\nSaldo attuale: {saldo}"
-        )
+        _, _, _, _, saldo = estratto_conto(user_id)
+        await update.message.reply_text(f"Entrata registrata: +{value}\nSaldo attuale: {saldo}")
     except (IndexError, ValueError):
         await update.message.reply_text("Errore! Usa /add numero, esempio /add 100")
 
@@ -70,10 +92,8 @@ async def subtract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         value = int(context.args[0])
         user_id = update.message.from_user.id
         salva_movimento(user_id, -value)
-        entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-        await update.message.reply_text(
-            f"Uscita registrata: -{value}\nSaldo attuale: {saldo}"
-        )
+        _, _, _, _, saldo = estratto_conto(user_id)
+        await update.message.reply_text(f"Uscita registrata: -{value}\nSaldo attuale: {saldo}")
     except (IndexError, ValueError):
         await update.message.reply_text("Errore! Usa /subtract numero, esempio /subtract 50")
 
@@ -99,6 +119,12 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(report_text)
 
+async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    filename = crea_file_excel_utente(user_id)
+    with open(filename, "rb") as file:
+        await update.message.reply_document(file, filename=filename)
+
 # Funzione principale
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -108,6 +134,7 @@ def main():
     app.add_handler(CommandHandler("subtract", subtract))
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("export", export))
 
     print("Bot avviato...")
     app.run_polling()
