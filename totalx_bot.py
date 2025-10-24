@@ -8,11 +8,8 @@ from openpyxl import Workbook, load_workbook
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# File Excel principale
+# Nome del file principale che salva tutti i dati
 FILE_EXCEL = "estratto_conto.xlsx"
-
-# Lista operatori iniziale (puoi aggiungere ID Telegram)
-operatori = []
 
 # Carica o crea il file Excel
 if os.path.exists(FILE_EXCEL):
@@ -21,155 +18,123 @@ if os.path.exists(FILE_EXCEL):
 else:
     wb = Workbook()
     ws = wb.active
-    ws.append(["user_id", "nome", "movimento", "tipo"])  # intestazioni
+    ws.append(["user_id", "movimento"])  # intestazioni
     wb.save(FILE_EXCEL)
 
 # Funzioni di utilità
-def salva_movimento(user_id: int, nome: str, valore: int, tipo: str):
-    ws.append([user_id, nome, valore, tipo])
+def salva_movimento(user_id: int, valore: int):
+    ws.append([user_id, valore])
     wb.save(FILE_EXCEL)
 
-def leggi_movimenti():
+def leggi_movimenti(user_id: int):
     movimenti = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        movimenti.append({"user_id": row[0], "nome": row[1], "valore": row[2], "tipo": row[3]})
+        if row[0] == user_id:
+            movimenti.append(row[1])
     return movimenti
 
-def calcola_totale():
-    movimenti = leggi_movimenti()
-    totale = sum([m["valore"] for m in movimenti])
-    return totale
+def estratto_conto(user_id: int):
+    movimenti = leggi_movimenti(user_id)
+    entrate = [m for m in movimenti if m > 0]
+    uscite = [m for m in movimenti if m < 0]
+    totale_entrate = sum(entrate)
+    totale_uscite = sum(uscite)
+    saldo = totale_entrate + totale_uscite
+    return entrate, uscite, totale_entrate, totale_uscite, saldo
 
-def estratto_conto():
-    movimenti = leggi_movimenti()
-    report = "📄 Estratto Conto\n\n"
-    if not movimenti:
-        report += "Nessun movimento registrato."
-        return report
+def crea_file_excel_utente(user_id: int):
+    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
     
-    for m in movimenti:
-        report += f"{m['nome']} - {m['tipo']}: {m['valore']}\n"
+    wb_user = Workbook()
+    ws_user = wb_user.active
+    ws_user.title = "Estratto Conto"
     
-    report += f"\nSaldo totale: {calcola_totale()}"
-    return report
+    ws_user.append(["Tipo", "Importo"])
+    
+    for m in entrate:
+        ws_user.append(["Entrata", m])
+    for m in uscite:
+        ws_user.append(["Uscita", m])
+    
+    ws_user.append([])
+    ws_user.append(["Totale Entrate", totale_entrate])
+    ws_user.append(["Totale Uscite", totale_uscite])
+    ws_user.append(["Saldo Finale", saldo])
+    
+    filename = f"estratto_conto_{user_id}.xlsx"
+    wb_user.save(filename)
+    return filename
 
-def resetta_cassa():
-    wb_new = Workbook()
-    ws_new = wb_new.active
-    ws_new.append(["user_id", "nome", "movimento", "tipo"])
-    wb_new.save(FILE_EXCEL)
-    global ws
-    ws = wb_new.active
-
-# Controlla se utente è operatore
-def is_operatore(user_id: int):
-    return user_id in operatori
-
-# Comandi bot
+# Comandi del bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Ciao! Bot Contabilità Condivisa.\n"
+        "Ciao! Sono TotalX Estratto Conto Bot Avanzato.\n"
         "Comandi:\n"
-        "/a numero - aggiungi entrata\n"
-        "/s numero - sottrai uscita\n"
-        "/c numero - registra commissioni/tasse\n"
-        "/total - saldo totale\n"
-        "/stop - chiusura cassa e reset\n"
-        "/add_operatore @username - aggiungi operatore\n"
-        "/rm_operatore @username - rimuovi operatore"
+        "/add numero - aggiunge un'entrata\n"
+        "/subtract numero - aggiunge un'uscita\n"
+        "/total - mostra il saldo totale\n"
+        "/report - mostra l'estratto conto dettagliato\n"
+        "/export - ricevi un file Excel con il tuo estratto conto"
     )
 
-async def a(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    nome = update.message.from_user.username or update.message.from_user.first_name
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
-        return
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        valore = int(context.args[0])
-        salva_movimento(user_id, nome, valore, "entrata")
-        await update.message.reply_text(f"Entrata registrata: +{valore}\nSaldo totale: {calcola_totale()}")
+        value = int(context.args[0])
+        user_id = update.message.from_user.id
+        salva_movimento(user_id, value)
+        _, _, _, _, saldo = estratto_conto(user_id)
+        await update.message.reply_text(f"Entrata registrata: +{value}\nSaldo attuale: {saldo}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /a numero")
+        await update.message.reply_text("Errore! Usa /add numero, esempio /add 100")
 
-async def s(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    nome = update.message.from_user.username or update.message.from_user.first_name
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
-        return
+async def subtract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        valore = int(context.args[0])
-        salva_movimento(user_id, nome, -valore, "uscita")
-        await update.message.reply_text(f"Uscita registrata: -{valore}\nSaldo totale: {calcola_totale()}")
+        value = int(context.args[0])
+        user_id = update.message.from_user.id
+        salva_movimento(user_id, -value)
+        _, _, _, _, saldo = estratto_conto(user_id)
+        await update.message.reply_text(f"Uscita registrata: -{value}\nSaldo attuale: {saldo}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /s numero")
-
-async def c(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    nome = update.message.from_user.username or update.message.from_user.first_name
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
-        return
-    try:
-        valore = int(context.args[0])
-        salva_movimento(user_id, nome, -valore, "commissioni/tasse")
-        await update.message.reply_text(f"Commissioni registrate: -{valore}\nSaldo totale: {calcola_totale()}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /c numero")
+        await update.message.reply_text("Errore! Usa /subtract numero, esempio /subtract 50")
 
 async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Saldo totale: {calcola_totale()}")
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
-        return
-    report = estratto_conto()
-    await update.message.reply_text(f"🔒 Chiusura cassa\n\n{report}")
-    resetta_cassa()
+    _, _, _, _, saldo = estratto_conto(user_id)
+    await update.message.reply_text(f"Saldo totale: {saldo}")
 
-async def add_operatore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
+    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
+    
+    if not entrate and not uscite:
+        await update.message.reply_text("Nessun movimento registrato.")
         return
-    try:
-        username = context.args[0].replace("@", "")
-        # Qui dovresti tradurre username in user_id reale, per semplicità aggiungiamo username come "id fittizio"
-        operatori.append(username)
-        await update.message.reply_text(f"Operatore {username} aggiunto.")
-    except IndexError:
-        await update.message.reply_text("Errore! Usa /add_operatore @username")
+    
+    report_text = "📄 Estratto Conto\n\n"
+    if entrate:
+        report_text += "Entrate:\n" + "\n".join([f"+{m}" for m in entrate]) + f"\nTotale Entrate: {totale_entrate}\n\n"
+    if uscite:
+        report_text += "Uscite:\n" + "\n".join([f"{m}" for m in uscite]) + f"\nTotale Uscite: {totale_uscite}\n\n"
+    report_text += f"Saldo: {saldo}"
+    
+    await update.message.reply_text(report_text)
 
-async def rm_operatore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if not is_operatore(user_id):
-        await update.message.reply_text("Non sei autorizzato.")
-        return
-    try:
-        username = context.args[0].replace("@", "")
-        if username in operatori:
-            operatori.remove(username)
-            await update.message.reply_text(f"Operatore {username} rimosso.")
-        else:
-            await update.message.reply_text(f"{username} non è operatore.")
-    except IndexError:
-        await update.message.reply_text("Errore! Usa /rm_operatore @username")
+    filename = crea_file_excel_utente(user_id)
+    with open(filename, "rb") as file:
+        await update.message.reply_document(file, filename=filename)
 
 # Funzione principale
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("a", a))
-    app.add_handler(CommandHandler("s", s))
-    app.add_handler(CommandHandler("c", c))
+    app.add_handler(CommandHandler("add", add))
+    app.add_handler(CommandHandler("subtract", subtract))
     app.add_handler(CommandHandler("total", total))
-    app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("add_operatore", add_operatore))
-    app.add_handler(CommandHandler("rm_operatore", rm_operatore))
+    app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("export", export))
 
     print("Bot avviato...")
     app.run_polling()
