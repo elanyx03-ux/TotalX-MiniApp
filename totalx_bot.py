@@ -1,143 +1,206 @@
 import os
-from dotenv import load_dotenv
+import csv
+from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from openpyxl import Workbook, load_workbook
+from telegram.ext import Updater, CommandHandler, CallbackContext
+from dotenv import load_dotenv
 
-# Carica variabili d'ambiente
+# ----------------------------
+# Config
+# ----------------------------
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
+OPERATORS_FILE = "operators.txt"
+OPERATIONS_FILE = "operations.csv"
+TOTAL_FILE = "total.txt"  # mantiene il totale attuale in memoria
 
-# Nome del file principale che salva tutti i dati
-FILE_EXCEL = "estratto_conto.xlsx"
-
-# Carica o crea il file Excel
-if os.path.exists(FILE_EXCEL):
-    wb = load_workbook(FILE_EXCEL)
-    ws = wb.active
-else:
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["user_id", "movimento"])  # intestazioni
-    wb.save(FILE_EXCEL)
-
-# Funzioni di utilità
-def salva_movimento(user_id: int, valore: int):
-    ws.append([user_id, valore])
-    wb.save(FILE_EXCEL)
-
-def leggi_movimenti(user_id: int):
-    movimenti = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if row[0] == user_id:
-            movimenti.append(row[1])
-    return movimenti
-
-def estratto_conto(user_id: int):
-    movimenti = leggi_movimenti(user_id)
-    entrate = [m for m in movimenti if m > 0]
-    uscite = [m for m in movimenti if m < 0]
-    totale_entrate = sum(entrate)
-    totale_uscite = sum(uscite)
-    saldo = totale_entrate + totale_uscite
-    return entrate, uscite, totale_entrate, totale_uscite, saldo
-
-def crea_file_excel_utente(user_id: int):
-    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-    
-    wb_user = Workbook()
-    ws_user = wb_user.active
-    ws_user.title = "Estratto Conto"
-    
-    ws_user.append(["Tipo", "Importo"])
-    
-    for m in entrate:
-        ws_user.append(["Entrata", m])
-    for m in uscite:
-        ws_user.append(["Uscita", m])
-    
-    ws_user.append([])
-    ws_user.append(["Totale Entrate", totale_entrate])
-    ws_user.append(["Totale Uscite", totale_uscite])
-    ws_user.append(["Saldo Finale", saldo])
-    
-    filename = f"estratto_conto_{user_id}.xlsx"
-    wb_user.save(filename)
-    return filename
-
-# Comandi del bot
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Ciao! Sono TotalX Estratto Conto Bot Avanzato.\n"
-        "Comandi:\n"
-        "/add numero - aggiunge un'entrata\n"
-        "/subtract numero - aggiunge un'uscita\n"
-        "/total - mostra il saldo totale\n"
-        "/report - mostra l'estratto conto dettagliato\n"
-        "/export - ricevi un file Excel con il tuo estratto conto"
-    )
-
-async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------------------
+# Operatori
+# ----------------------------
+def read_operators():
     try:
-        value = int(context.args[0])
-        user_id = update.message.from_user.id
-        salva_movimento(user_id, value)
-        _, _, _, _, saldo = estratto_conto(user_id)
-        await update.message.reply_text(f"Entrata registrata: +{value}\nSaldo attuale: {saldo}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /add numero, esempio /add 100")
+        with open(OPERATORS_FILE, "r") as f:
+            return [line.strip() for line in f.readlines()]
+    except FileNotFoundError:
+        return []
 
-async def subtract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def save_operators(operators):
+    with open(OPERATORS_FILE, "w") as f:
+        for op in operators:
+            f.write(f"{op}\n")
+
+def is_operator(update: Update):
+    username = update.effective_user.username
+    operators = read_operators()
+    return username in operators
+
+# ----------------------------
+# Totale
+# ----------------------------
+def read_total():
     try:
-        value = int(context.args[0])
-        user_id = update.message.from_user.id
-        salva_movimento(user_id, -value)
-        _, _, _, _, saldo = estratto_conto(user_id)
-        await update.message.reply_text(f"Uscita registrata: -{value}\nSaldo attuale: {saldo}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /subtract numero, esempio /subtract 50")
+        with open(TOTAL_FILE, "r") as f:
+            return int(f.read())
+    except FileNotFoundError:
+        return 0
 
-async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    _, _, _, _, saldo = estratto_conto(user_id)
-    await update.message.reply_text(f"Saldo totale: {saldo}")
+def save_total(total):
+    with open(TOTAL_FILE, "w") as f:
+        f.write(str(total))
 
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-    
-    if not entrate and not uscite:
-        await update.message.reply_text("Nessun movimento registrato.")
+# ----------------------------
+# Log operazioni su CSV
+# ----------------------------
+def log_operation(username, op_type, amount, total):
+    date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    file_exists = os.path.isfile(OPERATIONS_FILE)
+    with open(OPERATIONS_FILE, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Data", "Operatore", "Tipo", "Importo", "Totale"])
+        writer.writerow([date_str, username, op_type, amount, total])
+
+# ----------------------------
+# Comandi bot
+# ----------------------------
+def add(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a modificare il totale.")
         return
-    
-    report_text = "📄 Estratto Conto\n\n"
-    if entrate:
-        report_text += "Entrate:\n" + "\n".join([f"+{m}" for m in entrate]) + f"\nTotale Entrate: {totale_entrate}\n\n"
-    if uscite:
-        report_text += "Uscite:\n" + "\n".join([f"{m}" for m in uscite]) + f"\nTotale Uscite: {totale_uscite}\n\n"
-    report_text += f"Saldo: {saldo}"
-    
-    await update.message.reply_text(report_text)
+    try:
+        amount = int(context.args[0])
+    except (IndexError, ValueError):
+        update.message.reply_text("❌ Usa /a <importo>")
+        return
+    total = read_total() + amount
+    save_total(total)
+    log_operation(update.effective_user.username, "+", amount, total)
+    update.message.reply_text(f"✅ Totale aggiornato: {total}")
 
-async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    filename = crea_file_excel_utente(user_id)
-    with open(filename, "rb") as file:
-        await update.message.reply_document(file, filename=filename)
+def subtract(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a modificare il totale.")
+        return
+    try:
+        amount = int(context.args[0])
+    except (IndexError, ValueError):
+        update.message.reply_text("❌ Usa /s <importo>")
+        return
+    total = read_total() - amount
+    save_total(total)
+    log_operation(update.effective_user.username, "-", amount, total)
+    update.message.reply_text(f"✅ Totale aggiornato: {total}")
 
-# Funzione principale
+def commission(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a modificare il totale.")
+        return
+    try:
+        amount = int(context.args[0])
+    except (IndexError, ValueError):
+        update.message.reply_text("❌ Usa /c <importo>")
+        return
+    total = read_total() + amount
+    save_total(total)
+    log_operation(update.effective_user.username, "commissioni / tasse", amount, total)
+    update.message.reply_text(f"💰 Commissioni/tasse aggiunte: {amount}\nTotale aggiornato: {total}")
+
+def total_cmd(update: Update, context: CallbackContext):
+    total = read_total()
+    update.message.reply_text(f"💰 Totale attuale: {total}")
+
+# ----------------------------
+# Chiusura cassa /stop
+# ----------------------------
+def stop(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a fermare il conteggio.")
+        return
+
+    # Leggi tutte le operazioni
+    operations = []
+    if os.path.exists(OPERATIONS_FILE):
+        with open(OPERATIONS_FILE, "r") as f:
+            reader = csv.reader(f)
+            operations = list(reader)
+
+    # Prepara l'estratto conto
+    if len(operations) > 1:  # la prima riga è l'intestazione
+        message = "📄 Estratto conto di chiusura:\n"
+        for row in operations[1:]:
+            data, operatore, tipo, importo, totale = row
+            message += f"{data} | {operatore} | {tipo} {importo} | Totale: {totale}\n"
+    else:
+        message = "📄 Nessuna operazione registrata oggi."
+
+    total = read_total()
+    message += f"\n💰 Totale finale: {total}"
+
+    # Invia estratto conto su Telegram
+    update.message.reply_text(message)
+
+    # Resetta il totale e CSV
+    save_total(0)
+    with open(OPERATIONS_FILE, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Data", "Operatore", "Tipo", "Importo", "Totale"])
+
+    update.message.reply_text("♻️ Chiusura cassa completata. Nuovo foglio pronto!")
+
+# ----------------------------
+# Comandi gestione operatori
+# ----------------------------
+def add_operatore(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a fare questa operazione.")
+        return
+    try:
+        new_op = context.args[0].lstrip("@")
+    except IndexError:
+        update.message.reply_text("❌ Usa /add_operatore @username")
+        return
+    operators = read_operators()
+    if new_op in operators:
+        update.message.reply_text("❌ Utente già operatore")
+        return
+    operators.append(new_op)
+    save_operators(operators)
+    update.message.reply_text(f"✅ Operatore aggiunto: @{new_op}")
+
+def rm_operatore(update: Update, context: CallbackContext):
+    if not is_operator(update):
+        update.message.reply_text("❌ Non sei autorizzato a fare questa operazione.")
+        return
+    try:
+        rm_op = context.args[0].lstrip("@")
+    except IndexError:
+        update.message.reply_text("❌ Usa /rm_operatore @username")
+        return
+    operators = read_operators()
+    if rm_op not in operators:
+        update.message.reply_text("❌ Utente non presente nella lista")
+        return
+    operators.remove(rm_op)
+    save_operators(operators)
+    update.message.reply_text(f"✅ Operatore rimosso: @{rm_op}")
+
+# ----------------------------
+# Main
+# ----------------------------
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", add))
-    app.add_handler(CommandHandler("subtract", subtract))
-    app.add_handler(CommandHandler("total", total))
-    app.add_handler(CommandHandler("report", report))
-    app.add_handler(CommandHandler("export", export))
+    dp.add_handler(CommandHandler("a", add))
+    dp.add_handler(CommandHandler("s", subtract))
+    dp.add_handler(CommandHandler("c", commission))
+    dp.add_handler(CommandHandler("total", total_cmd))
+    dp.add_handler(CommandHandler("stop", stop))
+    dp.add_handler(CommandHandler("add_operatore", add_operatore))
+    dp.add_handler(CommandHandler("rm_operatore", rm_operatore))
 
-    print("Bot avviato...")
-    app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
