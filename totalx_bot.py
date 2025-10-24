@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Carica il token dal file .env
+# Carica token dal file .env
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
