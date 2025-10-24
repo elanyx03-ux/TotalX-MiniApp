@@ -4,17 +4,17 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Carica token dal file .env
+# Carica il token dal file .env
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-# Lista operatori iniziale (puoi modificare)
-OPERATORS = ["@elanyx"]  
+# Lista operatori iniziale
+OPERATORS = ["@elanyx"]
 
-# Stato della cassa e commissioni
+# Stato cassa e log
 total = 0
 commissions = 0
-log = []  # Lista di tuple (operatore, tipo, importo)
+log = []  # lista di tuple (operatore, tipo, importo)
 
 # ===== Funzioni helper =====
 def is_operator(user):
@@ -72,12 +72,11 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Non sei autorizzato!")
         return
 
-    # Mostra estratto conto
+    # Estratto conto
     report = "Estratto conto:\n"
     for entry in log:
         report += f"{entry[0]} ha {entry[1]} {entry[2]}\n"
     report += f"\nTotale finale: {total}\nCommissioni: {commissions}"
-    
     await update.message.reply_text(report)
 
     # Resetta cassa
