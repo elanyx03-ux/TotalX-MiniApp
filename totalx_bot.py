@@ -3,130 +3,147 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from openpyxl import Workbook, load_workbook
+from datetime import datetime
 
-# Carica variabili d'ambiente
+# Carica token da .env
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Nome del file principale che salva tutti i dati
-FILE_EXCEL = "estratto_conto.xlsx"
+# File Excel
+FILE_EXCEL = os.path.join(os.getcwd(), "estratto_conto.xlsx")
 
-# Carica o crea il file Excel
-if os.path.exists(FILE_EXCEL):
+# ✅ Assicura che il file Excel esista
+def ensure_excel():
+    if not os.path.exists(FILE_EXCEL):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Movimenti"
+        ws.append(["Data", "Ora", "Utente", "Tipo", "Importo"])  # intestazioni
+        wb.save(FILE_EXCEL)
+
+# 🧾 Salva movimento nel file
+def salva_movimento(username: str, tipo: str, valore: float):
+    ensure_excel()
     wb = load_workbook(FILE_EXCEL)
     ws = wb.active
-else:
-    wb = Workbook()
+
+    data = datetime.now().strftime("%d/%m/%Y")
+    ora = datetime.now().strftime("%H:%M:%S")
+
+    ws.append([data, ora, username, tipo, valore])
+    wb.save(FILE_EXCEL)
+
+# 📖 Leggi movimenti
+def leggi_movimenti():
+    ensure_excel()
+    wb = load_workbook(FILE_EXCEL)
     ws = wb.active
-    ws.append(["user_id", "movimento"])  # intestazioni
-    wb.save(FILE_EXCEL)
-
-# Funzioni di utilità
-def salva_movimento(user_id: int, valore: int):
-    ws.append([user_id, valore])
-    wb.save(FILE_EXCEL)
-
-def leggi_movimenti(user_id: int):
     movimenti = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if row[0] == user_id:
-            movimenti.append(row[1])
+        movimenti.append(row)
     return movimenti
 
-def estratto_conto(user_id: int):
-    movimenti = leggi_movimenti(user_id)
-    entrate = [m for m in movimenti if m > 0]
-    uscite = [m for m in movimenti if m < 0]
-    totale_entrate = sum(entrate)
-    totale_uscite = sum(uscite)
-    saldo = totale_entrate + totale_uscite
-    return entrate, uscite, totale_entrate, totale_uscite, saldo
+# 💰 Calcola saldo totale
+def calcola_saldo():
+    movimenti = leggi_movimenti()
+    return sum([m[4] for m in movimenti]) if movimenti else 0
 
-def crea_file_excel_utente(user_id: int):
-    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-    
-    wb_user = Workbook()
-    ws_user = wb_user.active
-    ws_user.title = "Estratto Conto"
-    
-    ws_user.append(["Tipo", "Importo"])
-    
-    for m in entrate:
-        ws_user.append(["Entrata", m])
-    for m in uscite:
-        ws_user.append(["Uscita", m])
-    
-    ws_user.append([])
-    ws_user.append(["Totale Entrate", totale_entrate])
-    ws_user.append(["Totale Uscite", totale_uscite])
-    ws_user.append(["Saldo Finale", saldo])
-    
-    filename = f"estratto_conto_{user_id}.xlsx"
-    wb_user.save(filename)
-    return filename
+# ♻️ Reset file
+def reset_excel():
+    if os.path.exists(FILE_EXCEL):
+        os.remove(FILE_EXCEL)
+    ensure_excel()
 
-# Comandi del bot
+# ↩️ Undo ultima operazione
+def undo_ultima_operazione():
+    ensure_excel()
+    wb = load_workbook(FILE_EXCEL)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) > 1:
+        ws.delete_rows(len(rows))
+        wb.save(FILE_EXCEL)
+        return rows[-1]
+    return None
+
+# 🚀 --- COMANDI DEL BOT ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Ciao! Sono TotalX Estratto Conto Bot Avanzato.\n"
-        "Comandi:\n"
-        "/add numero - aggiunge un'entrata\n"
-        "/subtract numero - aggiunge un'uscita\n"
-        "/total - mostra il saldo totale\n"
-        "/report - mostra l'estratto conto dettagliato\n"
-        "/export - ricevi un file Excel con il tuo estratto conto"
+        "👋 Ciao! Sono *TotalX Bot* 💰\n\n"
+        "Comandi disponibili:\n"
+        "/add numero → aggiunge un'entrata\n"
+        "/subtract numero → aggiunge un'uscita\n"
+        "/total → mostra il saldo totale\n"
+        "/report → mostra gli ultimi movimenti\n"
+        "/export → invia il file Excel\n"
+        "/undo → elimina l'ultima operazione\n"
+        "/reset → azzera tutto e ricrea il file",
+        parse_mode="Markdown"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        value = int(context.args[0])
-        user_id = update.message.from_user.id
-        salva_movimento(user_id, value)
-        _, _, _, _, saldo = estratto_conto(user_id)
-        await update.message.reply_text(f"Entrata registrata: +{value}\nSaldo attuale: {saldo}")
+        value = float(context.args[0])
+        username = update.message.from_user.first_name
+        salva_movimento(username, "Entrata", value)
+        saldo = calcola_saldo()
+        await update.message.reply_text(f"✅ {username} ha aggiunto +{value:.2f}€\n💰 Totale attuale: {saldo:.2f}€")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /add numero, esempio /add 100")
+        await update.message.reply_text("❗ Usa: /add 100")
 
 async def subtract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        value = int(context.args[0])
-        user_id = update.message.from_user.id
-        salva_movimento(user_id, -value)
-        _, _, _, _, saldo = estratto_conto(user_id)
-        await update.message.reply_text(f"Uscita registrata: -{value}\nSaldo attuale: {saldo}")
+        value = float(context.args[0])
+        username = update.message.from_user.first_name
+        salva_movimento(username, "Uscita", -value)
+        saldo = calcola_saldo()
+        await update.message.reply_text(f"💸 {username} ha speso -{value:.2f}€\n💰 Totale attuale: {saldo:.2f}€")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /subtract numero, esempio /subtract 50")
+        await update.message.reply_text("❗ Usa: /subtract 50")
 
 async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    _, _, _, _, saldo = estratto_conto(user_id)
-    await update.message.reply_text(f"Saldo totale: {saldo}")
+    saldo = calcola_saldo()
+    await update.message.reply_text(f"💰 Totale complessivo: {saldo:.2f}€")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    entrate, uscite, totale_entrate, totale_uscite, saldo = estratto_conto(user_id)
-    
-    if not entrate and not uscite:
-        await update.message.reply_text("Nessun movimento registrato.")
+    movimenti = leggi_movimenti()
+    if not movimenti:
+        await update.message.reply_text("📂 Nessun movimento registrato.")
         return
-    
-    report_text = "📄 Estratto Conto\n\n"
-    if entrate:
-        report_text += "Entrate:\n" + "\n".join([f"+{m}" for m in entrate]) + f"\nTotale Entrate: {totale_entrate}\n\n"
-    if uscite:
-        report_text += "Uscite:\n" + "\n".join([f"{m}" for m in uscite]) + f"\nTotale Uscite: {totale_uscite}\n\n"
-    report_text += f"Saldo: {saldo}"
-    
-    await update.message.reply_text(report_text)
+
+    report_lines = []
+    for m in movimenti[-20:]:
+        data, ora, utente, tipo, importo = m
+        report_lines.append(f"{data} {ora} | {utente} | {tipo} {importo:.2f}€")
+
+    saldo = calcola_saldo()
+    testo = "📄 Ultimi movimenti:\n\n" + "\n".join(report_lines) + f"\n\n💰 Totale: {saldo:.2f}€"
+    await update.message.reply_text(testo)
 
 async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    filename = crea_file_excel_utente(user_id)
-    with open(filename, "rb") as file:
-        await update.message.reply_document(file, filename=filename)
+    ensure_excel()
+    with open(FILE_EXCEL, "rb") as file:
+        await update.message.reply_document(file, filename="estratto_conto.xlsx")
 
-# Funzione principale
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_excel()
+    await update.message.reply_text("♻️ Tutto azzerato! Nuovo file creato.")
+
+async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    last = undo_ultima_operazione()
+    if last:
+        data, ora, utente, tipo, importo = last
+        saldo = calcola_saldo()
+        await update.message.reply_text(
+            f"🗑️ Eliminata ultima operazione:\n{data} {ora} | {utente} | {tipo} {importo:.2f}€\n💰 Totale ora: {saldo:.2f}€"
+        )
+    else:
+        await update.message.reply_text("⚠️ Nessuna operazione da eliminare.")
+
+# MAIN
 def main():
+    ensure_excel()
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -135,8 +152,10 @@ def main():
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("export", export))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("undo", undo))
 
-    print("Bot avviato...")
+    print("🤖 Bot avviato correttamente su Termux!")
     app.run_polling()
 
 if __name__ == "__main__":
